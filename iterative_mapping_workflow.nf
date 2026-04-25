@@ -79,7 +79,8 @@ process merge_dedup_bams_all {
     val(iteration)
 
     output:
-    path("${params.sample}_merged_rmdup.bam"), emit: merged_rmdup_bam
+    path("${params.sample}_merged_rmdup.bam"),     emit: merged_rmdup_bam
+    path("${params.sample}_merged_rmdup.bam.bai"), emit: merged_rmdup_bai
 
     script:
     """
@@ -92,9 +93,76 @@ process merge_dedup_bams_all {
     printf "Removing duplicates after merging.........................${params.sample}\n"
     samtools view -@ ${task.cpus} -h ${params.sample}_merged.bam | \\
     python3 ${params.script_rmdup} | \\
-    samtools view -@ ${task.cpus} -bh -o ${params.sample}_merged_rmdup.bam -
-    samtools index ${params.sample}_merged_rmdup.bam
+    samtools view -@ ${task.cpus} -bh -o ${params.sample}_merged_rmdup_norg.bam -
     printf "${params.sample} Merging and removing duplicates................. DONE\n\n"
+
+    printf "Adding read group header..................................${params.sample}\n"
+    samtools addreplacerg \\
+        -r "ID:${params.sample}\tSM:${params.sample}\tPL:ILLUMINA\tLB:${params.sample}" \\
+        -@ ${task.cpus} \\
+        -o ${params.sample}_merged_rmdup.bam \\
+        ${params.sample}_merged_rmdup_norg.bam
+    samtools index ${params.sample}_merged_rmdup.bam
+    printf "${params.sample} Read group added................................... DONE\n\n"
+    """
+}
+
+process prepare_reference_for_gatk {
+    label 'process_prepare_reference_gatk'
+    tag { "iteration_${iteration}" }
+
+    input:
+    path(ref)
+    val(iteration)
+
+    output:
+    path("${ref}.fai"),             emit: fai
+    path("${ref.baseName}.dict"),   emit: dict
+
+    script:
+    """
+    set -euo pipefail
+    ml -q samtools/1.20
+
+    samtools faidx ${ref}
+    samtools dict ${ref} -o ${ref.baseName}.dict
+    """
+}
+
+process gatk_indel_realigner {
+    label 'process_gatk_indel_realigner'
+    tag { "iteration_${iteration}" }
+
+    publishDir "${params.outdir}/iteration_${iteration}/realigned_bams/", mode: 'symlink'
+
+    container 'broadinstitute/gatk3:3.8-1'
+
+    input:
+    path(bam)
+    path(bai)
+    path(ref)
+    path(fai)
+    path(dict)
+    val(iteration)
+
+    output:
+    path("${params.sample}_merged_rmdup.realigned.bam"), emit: realigned_bam
+
+    script:
+    def avail_mem = task.memory ? (task.memory.toGiga()).toInteger() : 4
+    """
+    java -Xmx${avail_mem}g -jar /usr/GenomeAnalysisTK.jar \\
+        -T RealignerTargetCreator \\
+        -R ${ref} \\
+        -I ${bam} \\
+        -o ${params.sample}.intervals
+
+    java -Xmx${avail_mem}g -jar /usr/GenomeAnalysisTK.jar \\
+        -T IndelRealigner \\
+        -R ${ref} \\
+        -I ${bam} \\
+        -targetIntervals ${params.sample}.intervals \\
+        -o ${params.sample}_merged_rmdup.realigned.bam
     """
 }
 
@@ -114,6 +182,7 @@ process call_fixed_variants {
     path("${params.sample}*_homalt.bcf.csi"), emit: filtered_bcf_index
 
     script:
+
     """
     set -euo pipefail
     ml -q bcftools
@@ -166,6 +235,7 @@ process call_fixed_snvs {
     """
 }
 
+
 process make_consensus {
     label 'process_make_consensus'
     tag { "iteration_${iteration}" }
@@ -206,10 +276,23 @@ workflow iterative_mapping {
 
     // merge and remove duplicates for all libraries
     merge_dedup_bams_all(ch_filtered_bams, ch_iteration)
-    ch_dedup_bams = merge_dedup_bams_all.out.merged_rmdup_bam
 
-    // call variants on the merged BAM
-    call_fixed_variants(ch_dedup_bams, ch_ref, ch_iteration)
+    // prepare reference for GATK (fai + dict)
+    prepare_reference_for_gatk(ch_ref, ch_iteration)
+
+    // indel realignment on merged BAM before SNP calling
+    gatk_indel_realigner(
+        merge_dedup_bams_all.out.merged_rmdup_bam,
+        merge_dedup_bams_all.out.merged_rmdup_bai,
+        ch_ref,
+        prepare_reference_for_gatk.out.fai,
+        prepare_reference_for_gatk.out.dict,
+        ch_iteration
+    )
+    ch_realigned_bam = gatk_indel_realigner.out.realigned_bam
+
+    // call variants on the realigned BAM
+    call_fixed_variants(ch_realigned_bam, ch_ref, ch_iteration)
     ch_filtered_bcf = call_fixed_variants.out.filtered_bcf.combine(call_fixed_variants.out.filtered_bcf_index)
 
     // make consensus sequence
