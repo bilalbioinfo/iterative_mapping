@@ -31,7 +31,7 @@ process bwa_aln_samse {
     val(iteration)
 
     output:
-    path("${fq.baseName}_sorted.bam"), emit: sorted_bam
+    path("${fq.baseName}*_rmdup.bam"), emit: sorted_rmdup_bam
 
     script:
     def reference = ref_index[0]
@@ -39,17 +39,38 @@ process bwa_aln_samse {
     set -euo pipefail
     ml bwa samtools
 
-    bwa aln -l 16500 -n 0.01 -o 2 -t ${task.cpus} ${reference} ${fq} | \
-        bwa samse ${reference} - ${fq} | \
-        samtools view -F 4 -q 1 -@ ${task.cpus} -bh - | \
+    ## Mapping
+    printf "STARTING mapping............................................. ${fq.baseName}\n"
+    bwa aln -l 16500 -n 0.01 -o 2 -t ${task.cpus} ${reference} ${fq} | \\
+        bwa samse ${reference} - ${fq} | \\
+        samtools view -@ ${task.cpus} -bh - | \\
         samtools sort -@ ${task.cpus} -o ${fq.baseName}_sorted.bam -
     samtools index ${fq.baseName}_sorted.bam
+    printf "${fq.baseName} .............................................. completed\n"
+
+    ## Filtering
+    printf "STARTING filtering............................................. ${fq.baseName}\n"
+    samtools view -F 4 -q ${params.mapQ} -@ ${task.cpus} -h ${fq.baseName}_sorted.bam | \\
+        awk -v minlen="${params.min_readlength}" '\$1 ~ /^@/ || length(\$10) >= minlen' | \\
+        samtools view -@ ${task.cpus} -bh -o ${fq.baseName}_mq${params.mapQ}_l${params.min_readlength}_filtered.bam -
+    samtools index ${fq.baseName}_mq${params.mapQ}_l${params.min_readlength}_filtered.bam
+    printf "${fq.baseName} .............................................. completed\n"
+
+    ## Remove duplicates
+    printf "STARTING removing duplicates............................................. ${fq.baseName}\n"
+    samtools view -@ ${task.cpus} -h ${fq.baseName}_mq${params.mapQ}_l${params.min_readlength}_filtered.bam | \\
+    python3 ${params.script_rmdup} | \\
+    samtools view -@ ${task.cpus} -bh -o ${fq.baseName}_mq${params.mapQ}_l${params.min_readlength}_rmdup.bam -
+    samtools index ${fq.baseName}_mq${params.mapQ}_l${params.min_readlength}_rmdup.bam
+    printf "${fq.baseName} .............................................. completed\n"
+
+    printf "${fq.baseName} .............................................. DONE\n\n"
     """
 }
 
-process merge_dedup_bams {
+process merge_dedup_bams_all {
     label 'process_merge_dedup_bams'
-    tag  { "iteration_${iteration}" }
+    tag { "iteration_${iteration}" }
 
     publishDir "${params.outdir}/iteration_${iteration}/merged_bams/", mode: 'symlink'
 
@@ -65,134 +86,52 @@ process merge_dedup_bams {
     set -euo pipefail
     ml -q samtools/1.20
 
-    ############################################################################################
-    ### P13117_D1
-    printf "Merging for library P13117_D1...\n"
-    samtools merge -@ ${task.cpus} -o P13117_D1_merged.bam \
-        P13117_P13117_1001*bam \
-        P13117_P13117_1002*bam \
-        P13117_P13117_1003*bam \
-        P13117_P13117_1004*bam \
-        P13117_P13117_1005*bam \
-        P13117_P13117_1006*bam \
-        P13117_P13117_1007*bam \
-        P13117_P13117_1008*bam \
-        P13117_P13117_1009*bam \
-        P13117_P13117_1010*bam
+    printf "Merging bam files.........................................${params.sample}\n"
+    samtools merge -@ ${task.cpus} -o ${params.sample}_merged.bam ${sorted_bams}
 
-
-    printf "Removing duplicates for library P13117_D1...\n"
-    samtools view -@ ${task.cpus} -h P13117_D1_merged.bam | \
-    python3 ${params.script_rmdup} | \
-    samtools view -@ ${task.cpus} -bh -o P13117_D1_merged_rmdup.bam -
-    samtools index P13117_D1_merged_rmdup.bam
-    printf "Merging and removing duplicates for library P13117_D1... DONE\n\n"
-
-    ############################################################################################
-    ### P15057_D1
-    printf "Merging for library P15057_D1...\n"
-    samtools merge -@ ${task.cpus} -o P15057_D1_merged.bam \
-        P15057_P15057_1169*bam \
-        P15057_P15057_1175*bam \
-        P15057_P15057_1181*bam \
-        P15057_P15057_1187*bam \
-        P15057_P15057_1193*bam \
-        P15057_P15057_1199*bam \
-        P15057_P15057_1205*bam \
-        P15057_P15057_1211*bam \
-        P15057_P15057_1217*bam \
-        P15057_P15057_1223*bam \
-        P15057_P15057_1227*bam \
-        P15057_P15057_1229*bam
-
-
-    printf "Removing duplicates for library P15057_D1...\n"
-    samtools view -@ ${task.cpus} -h P15057_D1_merged.bam | \
-    python3 ${params.script_rmdup} | \
-    samtools view -@ ${task.cpus} -bh -o P15057_D1_merged_rmdup.bam -
-    samtools index P15057_D1_merged_rmdup.bam
-    printf "Merging and removing duplicates for library P15057_D1... DONE\n\n"
-
-    ############################################################################################
-    ### P15057_D2
-    printf "Merging for library P15057_D2...\n"
-    samtools merge -@ ${task.cpus} -o P15057_D2_merged.bam \
-        P15057_P15057_1110*bam \
-        P15057_P15057_1116*bam \
-        P15057_P15057_1122*bam \
-        P15057_P15057_1128*bam \
-        P15057_P15057_1134*bam \
-        P15057_P15057_1140*bam \
-        P15057_P15057_1146*bam \
-        P15057_P15057_1152*bam \
-        P15057_P15057_1158*bam \
-        P15057_P15057_1163*bam \
-        P15057_P15057_1165*bam \
-        P15057_P15057_1167*bam
-
-
-    printf "Removing duplicates for library P15057_D2...\n"
-    samtools view -@ ${task.cpus} -h P15057_D2_merged.bam | \
-    python3 ${params.script_rmdup} | \
-    samtools view -@ ${task.cpus} -bh -o P15057_D2_merged_rmdup.bam -
-    samtools index P15057_D2_merged_rmdup.bam
-    printf "Merging and removing duplicates for library P15057_D2... DONE\n\n"
-
-    ############################################################################################
-    ### P29310_D1
-    printf "Merging for library P29310_D1...\n"
-    samtools merge -@ ${task.cpus} -o P29310_D1_merged.bam \
-        P29310_P29310_1001*bam \
-        P29310_P29310_1002*bam \
-        P29310_P29310_1003*bam \
-        P29310_P29310_1004*bam \
-        P29310_P29310_1005*bam \
-        P29310_P29310_1006*bam \
-        P29310_P29310_1007*bam \
-        P29310_P29310_1008*bam
-
-    printf "Removing duplicates for library P29310_D1...\n"
-    samtools view -@ ${task.cpus} -h P29310_D1_merged.bam | \
-    python3 ${params.script_rmdup} | \
-    samtools view -@ ${task.cpus} -bh -o P29310_D1_merged_rmdup.bam -
-    samtools index P29310_D1_merged_rmdup.bam
-    printf "Merging and removing duplicates for library P29310_D1... DONE\n\n"
-
-    ############################################################################################
-    ### P29310_D2
-    printf "Merging for library P29310_D2...\n"
-    samtools merge -@ ${task.cpus} -o P29310_D2_merged.bam \
-        P29310_P29310_1009*bam \
-        P29310_P29310_1010*bam \
-        P29310_P29310_1011*bam \
-        P29310_P29310_1012*bam \
-        P29310_P29310_1013*bam \
-        P29310_P29310_1014*bam \
-        P29310_P29310_1015*bam \
-        P29310_P29310_1016*bam
-
-    printf "Removing duplicates for library P29310_D2...\n"
-    samtools view -@ ${task.cpus} -h P29310_D2_merged.bam | \
-    python3 ${params.script_rmdup} | \
-    samtools view -@ ${task.cpus} -bh -o P29310_D2_merged_rmdup.bam -
-    samtools index P29310_D2_merged_rmdup.bam
-    printf "Merging and removing duplicates for library P29310_D2... DONE\n\n"
-
-    ############################################################################################
-    ### Merging all libraries
-    printf "Merging for all libraries...\n"
-    samtools merge -@ ${task.cpus} -o ${params.sample}_merged_rmdup.bam \
-        P13117_D1_merged_rmdup.bam \
-        P15057_D1_merged_rmdup.bam \
-        P15057_D2_merged_rmdup.bam \
-        P29310_D1_merged_rmdup.bam \
-        P29310_D2_merged_rmdup.bam
+    printf "Removing duplicates after merging.........................${params.sample}\n"
+    samtools view -@ ${task.cpus} -h ${params.sample}_merged.bam | \\
+    python3 ${params.script_rmdup} | \\
+    samtools view -@ ${task.cpus} -bh -o ${params.sample}_merged_rmdup.bam -
     samtools index ${params.sample}_merged_rmdup.bam
-    printf "Merging and removing duplicates for all libraries... DONE\n\n"
+    printf "${params.sample} Merging and removing duplicates................. DONE\n\n"
     """
 }
 
 process call_fixed_variants {
+    label 'process_call_fixed_variants'
+    tag { "iteration_${iteration}" }
+
+    publishDir "${params.outdir}/iteration_${iteration}/variants/", mode: 'symlink'
+
+    input:
+    path(merged_bam)
+    path(ref)
+    val(iteration)
+
+    output:
+    path("${params.sample}*_homalt.bcf"), emit: filtered_bcf
+    path("${params.sample}*_homalt.bcf.csi"), emit: filtered_bcf_index
+
+    script:
+    """
+    set -euo pipefail
+    ml -q bcftools
+
+    bcftools mpileup -q ${params.mapQ} -Q ${params.baseQ} -B -f ${ref} ${merged_bam} --ignore-RG --threads ${task.cpus} -Ou | \\
+        bcftools call -mv -Ob --threads ${task.cpus} -o ${params.sample}.bcf
+    bcftools sort -Ob -o ${params.sample}_sorted.bcf ${params.sample}.bcf
+    bcftools filter -i "DP>=${params.min_depth} & DP<${params.max_depth} & QUAL>=${params.variant_quality}" -Ob --threads ${task.cpus} \\
+        -o ${params.sample}_DP${params.min_depth}-${params.max_depth}.bcf ${params.sample}_sorted.bcf
+    bcftools filter -g ${params.snp_gap_indels} -Ob --threads ${task.cpus} -o ${params.sample}_DP${params.min_depth}-${params.max_depth}_g${params.snp_gap_indels}.bcf \\
+        ${params.sample}_DP${params.min_depth}-${params.max_depth}.bcf
+    bcftools filter -i 'GT="1/1"' -O b --threads ${task.cpus} -o ${params.sample}_DP${params.min_depth}-${params.max_depth}_g${params.snp_gap_indels}_homalt.bcf \\
+        ${params.sample}_DP${params.min_depth}-${params.max_depth}_g${params.snp_gap_indels}.bcf
+    bcftools index ${params.sample}_DP${params.min_depth}-${params.max_depth}_g${params.snp_gap_indels}_homalt.bcf
+    """
+}
+
+process call_fixed_snvs {
     label 'process_call_fixed_variants'
     tag { "iteration_${iteration}" }
 
@@ -239,14 +178,14 @@ process make_consensus {
     val(iteration)
 
     output:
-    path("${params.sample}_consensus.fasta"),   emit: consensus_fasta
-    path("${params.sample}_consensus.log"),     emit: consensus_log
+    path("${params.sample}_consensus_itr${iteration}.fasta"),   emit: consensus_fasta
+    path("${params.sample}_consensus_itr${iteration}.log"),     emit: consensus_log
 
     script:
     """
     set -euo pipefail
     ml -q bcftools
-    bcftools consensus -f ${ref} -o ${params.sample}_consensus.fasta ${filtered_bcf} 2> ${params.sample}_consensus.log
+    bcftools consensus -f ${ref} -o ${params.sample}_consensus_itr${iteration}.fasta ${filtered_bcf} 2> ${params.sample}_consensus_itr${iteration}.log
     """
 }
 
@@ -263,11 +202,11 @@ workflow iterative_mapping {
 
     // run mapping on all fastq files in parallel
     bwa_aln_samse(fastq_files, ch_ref_index, ch_iteration)
-    ch_filtered_bams = bwa_aln_samse.out.sorted_bam.collect()
+    ch_filtered_bams = bwa_aln_samse.out.sorted_rmdup_bam.collect()
 
-    // merge and remove duplicates for test dataset
-    merge_dedup_bams(ch_filtered_bams, ch_iteration)
-    ch_dedup_bams = merge_dedup_bams.out.merged_rmdup_bam
+    // merge and remove duplicates for all libraries
+    merge_dedup_bams_all(ch_filtered_bams, ch_iteration)
+    ch_dedup_bams = merge_dedup_bams_all.out.merged_rmdup_bam
 
     // call variants on the merged BAM
     call_fixed_variants(ch_dedup_bams, ch_ref, ch_iteration)
