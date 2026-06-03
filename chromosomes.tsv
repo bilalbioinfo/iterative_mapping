@@ -1,0 +1,5 @@
+# One chromosome name per line (must match sequence names in the reference FASTA)
+# Example for domestic cat GCF_018350175.1:
+# NC_058368.1
+# NC_058369.1
+# ...
