@@ -220,6 +220,7 @@ process deepvariant_call {
         --reads=${merged_bam} \\
         --regions=${chrom} \\
         --output_vcf=${params.sample}_${chrom}_raw.vcf.gz \\
+        --postprocess_variants_extra_args="qual_filter=0" \\
         --num_shards=${task.cpus} \\
         --disable_small_model=true \\
         --vcf_stats_report=true \\
